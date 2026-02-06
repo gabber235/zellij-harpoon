@@ -4,6 +4,30 @@ use std::collections::BTreeMap;
 use owo_colors::OwoColorize;
 use zellij_tile::prelude::*;
 
+// ----------------------------------- Debug Logging -----------------------------------
+
+#[cfg(debug_assertions)]
+macro_rules! debug_log {
+    ($($arg:tt)*) => {{
+        let msg = format!($($arg)*);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let line = format!("[{timestamp}] {msg}\n");
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/host/harpoon_debug.log")
+            .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
+    }};
+}
+
+#[cfg(not(debug_assertions))]
+macro_rules! debug_log {
+    ($($arg:tt)*) => {};
+}
+
 // ----------------------------------- Slot Data Structures -----------------------------------
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -245,9 +269,16 @@ impl State {
 
     fn save_to_disk(&mut self) {
         let json = serde_json::to_string(&self.harpoon_data).unwrap_or_default();
+        debug_log!(
+            "save_to_disk: writing {} slots",
+            self.harpoon_data.slots.len()
+        );
         match std::fs::write("/host/harpoon.json", &json) {
-            Ok(()) => {}
+            Ok(()) => {
+                debug_log!("save_to_disk: success");
+            }
             Err(e) => {
+                debug_log!("save_to_disk: error: {e}");
                 self.error = Some(format!("Save failed: {e}"));
             }
         }
@@ -255,17 +286,29 @@ impl State {
 
     fn load_from_disk(&mut self) {
         if !self.host_folder_ready {
+            debug_log!("load_from_disk: skipped (host folder not ready)");
             return;
         }
+        debug_log!("load_from_disk: reading /host/harpoon.json");
         match std::fs::read_to_string("/host/harpoon.json") {
             Ok(contents) => match serde_json::from_str::<HarpoonData>(contents.trim()) {
-                Ok(data) => self.harpoon_data = data,
-                Err(e) => self.error = Some(format!("Parse failed: {e}")),
+                Ok(data) => {
+                    debug_log!("load_from_disk: loaded {} slots", data.slots.len());
+                    self.harpoon_data = data;
+                }
+                Err(e) => {
+                    debug_log!("load_from_disk: parse error: {e}");
+                    self.error = Some(format!("Parse failed: {e}"));
+                }
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                debug_log!("load_from_disk: file not found, using default");
                 self.harpoon_data = HarpoonData::default();
             }
-            Err(e) => self.error = Some(format!("Load failed: {e}")),
+            Err(e) => {
+                debug_log!("load_from_disk: error: {e}");
+                self.error = Some(format!("Load failed: {e}"));
+            }
         }
     }
 
@@ -279,6 +322,7 @@ impl State {
 
         match action {
             Some("resolve_home") => {
+                debug_log!("handle_command_result: resolve_home, exit_code={exit_code:?}");
                 if exit_code != Some(0) {
                     self.error = Some("Failed to resolve $HOME".to_string());
                     return;
@@ -303,6 +347,7 @@ impl State {
                 );
             }
             Some("mkdir_config") => {
+                debug_log!("handle_command_result: mkdir_config, exit_code={exit_code:?}");
                 if exit_code != Some(0) {
                     self.error = Some("Failed to create config directory".to_string());
                     return;
@@ -313,8 +358,13 @@ impl State {
                 };
 
                 change_host_folder(std::path::PathBuf::from(config_dir));
+                debug_log!("handle_command_result: host folder set to {config_dir}");
                 self.host_folder_ready = true;
                 self.load_from_disk();
+                debug_log!(
+                    "handle_command_result: draining {} pending actions",
+                    self.pending_actions.len()
+                );
                 self.drain_pending_actions();
             }
             _ => {}
@@ -466,6 +516,11 @@ impl ZellijPlugin for State {
     }
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
+        debug_log!(
+            "pipe: name={}, payload={:?}",
+            pipe_message.name,
+            pipe_message.payload
+        );
         let slot = pipe_message
             .payload
             .as_deref()
