@@ -39,6 +39,12 @@ tasks:
       - task: build:dev
       - zellij action start-or-reload-plugin "file:{{.PLUGIN_DIR}}/{{.PLUGIN_NAME}}"
 
+  release:
+    desc: Build release and hot-reload plugin in running zellij session
+    cmds:
+      - task: build:release
+      - zellij action start-or-reload-plugin "file:{{.PLUGIN_DIR}}/{{.PLUGIN_NAME}}"
+
   build:
     desc: Alias for build:release
     cmds:
