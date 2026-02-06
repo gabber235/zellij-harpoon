@@ -497,6 +497,8 @@ impl ZellijPlugin for State {
     }
 
     fn render(&mut self, _rows: usize, cols: usize) {
+        self.load_from_disk();
+
         let title = "─ Harpoon ";
         let title_suffix = "─".repeat(cols.saturating_sub(title.len() + 2));
         println!("{}{}", title.bold(), title_suffix);
