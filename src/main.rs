@@ -41,19 +41,7 @@ pub struct HarpoonSlot {
 
 #[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct HarpoonData {
-    pub slots: Vec<Option<HarpoonSlot>>,
-}
-
-impl HarpoonData {
-    fn ensure_slot(&mut self, index: usize) {
-        while self.slots.len() <= index {
-            self.slots.push(None);
-        }
-    }
-
-    fn get_slot(&self, index: usize) -> Option<&HarpoonSlot> {
-        self.slots.get(index).and_then(|s| s.as_ref())
-    }
+    pub slots: BTreeMap<char, HarpoonSlot>,
 }
 
 // ----------------------------------- Legacy Pane Display -----------------------------------
@@ -67,8 +55,8 @@ pub struct Pane {
 // ----------------------------------- Pending Actions -----------------------------------
 
 enum PendingAction {
-    Jump(usize),
-    Assign(usize),
+    Jump(char),
+    Assign(char),
 }
 
 // ----------------------------------- Helper Functions -----------------------------------
@@ -85,26 +73,11 @@ fn get_focused_pane(tab_position: usize, pane_manifest: &PaneManifest) -> Option
         .cloned()
 }
 
-// Slot key mapping: y=0, u=1, i=2, o=3, p=4
-fn char_to_slot_index(c: char) -> Option<usize> {
-    match c.to_ascii_lowercase() {
-        'y' => Some(0),
-        'u' => Some(1),
-        'i' => Some(2),
-        'o' => Some(3),
-        'p' => Some(4),
-        _ => None,
-    }
-}
-
-fn slot_index_to_char(index: usize) -> char {
-    match index {
-        0 => 'y',
-        1 => 'u',
-        2 => 'i',
-        3 => 'o',
-        4 => 'p',
-        _ => '?',
+fn is_slot_key(c: char) -> bool {
+    match c {
+        'a'..='z' if c != 'j' && c != 'k' => true,
+        '0'..='9' => true,
+        _ => false,
     }
 }
 
@@ -130,21 +103,36 @@ struct State {
     pane_manifest: Option<PaneManifest>,
 
     // UI state
-    selected_slot: usize,
-    awaiting_delete_key: bool,
+    selected_index: usize,
 }
 
 impl State {
     fn select_down(&mut self) {
-        self.selected_slot = (self.selected_slot + 1) % 5;
+        let count = self.harpoon_data.slots.len();
+        if count == 0 {
+            return;
+        }
+        self.selected_index = (self.selected_index + 1) % count;
     }
 
     fn select_up(&mut self) {
-        if self.selected_slot == 0 {
-            self.selected_slot = 4;
-        } else {
-            self.selected_slot -= 1;
+        let count = self.harpoon_data.slots.len();
+        if count == 0 {
+            return;
         }
+        if self.selected_index == 0 {
+            self.selected_index = count - 1;
+        } else {
+            self.selected_index -= 1;
+        }
+    }
+
+    fn selected_key(&self) -> Option<char> {
+        self.harpoon_data
+            .slots
+            .keys()
+            .nth(self.selected_index)
+            .copied()
     }
 
     fn update_panes(&mut self) -> Option<()> {
@@ -172,13 +160,11 @@ impl State {
 
         let mut changed = false;
 
-        for slot in self.harpoon_data.slots.iter_mut().flatten() {
-            // Only update slots for the current session
+        for slot in self.harpoon_data.slots.values_mut() {
             if &slot.session_name != session_name {
                 continue;
             }
 
-            // Update tab position if tab was moved/renamed
             if let Some(tab) = tab_info.iter().find(|t| t.name == slot.tab_name) {
                 if slot.tab_position != tab.position {
                     slot.tab_position = tab.position;
@@ -186,7 +172,6 @@ impl State {
                 }
             }
 
-            // Update pane title if changed
             if let Some(pane_manifest) = &self.pane_manifest {
                 if let Some(panes) = pane_manifest.panes.get(&slot.tab_position) {
                     if let Some(pane) = panes.iter().find(|p| p.id == slot.pane_id) {
@@ -204,7 +189,7 @@ impl State {
         }
     }
 
-    fn assign_slot(&mut self, slot_index: usize) {
+    fn assign_slot(&mut self, key: char) {
         let Some(session_name) = self.current_session_name.clone() else {
             return;
         };
@@ -213,48 +198,53 @@ impl State {
         };
         self.load_from_disk();
 
-        self.harpoon_data.ensure_slot(slot_index);
-        self.harpoon_data.slots[slot_index] = Some(HarpoonSlot {
-            session_name,
-            tab_name: focused_pane.tab_info.name.clone(),
-            tab_position: focused_pane.tab_info.position,
-            pane_id: focused_pane.pane_info.id,
-            pane_title: focused_pane.pane_info.title.clone(),
-        });
+        self.harpoon_data.slots.insert(
+            key,
+            HarpoonSlot {
+                session_name,
+                tab_name: focused_pane.tab_info.name.clone(),
+                tab_position: focused_pane.tab_info.position,
+                pane_id: focused_pane.pane_info.id,
+                pane_title: focused_pane.pane_info.title.clone(),
+            },
+        );
 
         self.save_to_disk();
-        hide_self();
     }
 
-    fn delete_slot(&mut self, slot_index: usize) {
-        // Re-read from disk to pick up changes from other session instances
+    fn delete_slot(&mut self, key: char) {
         self.load_from_disk();
+        self.harpoon_data.slots.remove(&key);
+        self.save_to_disk();
+    }
 
-        if slot_index < self.harpoon_data.slots.len() {
-            self.harpoon_data.slots[slot_index] = None;
-            self.save_to_disk();
+    fn delete_selected_slot(&mut self) {
+        let Some(key) = self.selected_key() else {
+            return;
+        };
+        self.delete_slot(key);
+        let count = self.harpoon_data.slots.len();
+        if count > 0 && self.selected_index >= count {
+            self.selected_index = count - 1;
         }
     }
 
-    fn jump_to_slot(&mut self, slot_index: usize) {
-        // Re-read from disk to pick up changes from other session instances
+    fn jump_to_slot(&mut self, key: char) {
         self.load_from_disk();
 
-        let Some(slot_data) = self.harpoon_data.get_slot(slot_index) else {
+        let Some(slot_data) = self.harpoon_data.slots.get(&key) else {
             return;
         };
 
         let current_session = self.current_session_name.as_ref();
 
         if current_session == Some(&slot_data.session_name) {
-            // Same session: just focus the pane directly (faster)
             focus_terminal_pane(slot_data.pane_id, true);
         } else {
-            // Different session: switch session and focus pane
             switch_session_with_focus(
                 &slot_data.session_name,
                 Some(slot_data.tab_position),
-                Some((slot_data.pane_id, false)), // (pane_id, is_plugin)
+                Some((slot_data.pane_id, false)),
             );
         }
         hide_self();
@@ -443,72 +433,38 @@ impl ZellijPlugin for State {
                 self.sync_slots_with_state();
                 should_render = true;
             }
-            Event::Key(key) => {
-                // Handle delete mode (awaiting second key)
-                if self.awaiting_delete_key {
-                    self.awaiting_delete_key = false;
-                    if let BareKey::Char(c) = key.bare_key {
-                        if let Some(slot_index) = char_to_slot_index(c) {
-                            self.delete_slot(slot_index);
-                            should_render = true;
-                            return should_render;
-                        }
-                    }
-                    // Invalid key after 'd', just ignore and re-render
+            Event::Key(key) => match key.bare_key {
+                BareKey::Char(c)
+                    if c.is_ascii_uppercase() && is_slot_key(c.to_ascii_lowercase()) =>
+                {
+                    self.assign_slot(c.to_ascii_lowercase());
                     should_render = true;
-                    return should_render;
                 }
-
-                match key.bare_key {
-                    // Lowercase y/u/i/o/p: Jump to slot
-                    BareKey::Char('y') => self.jump_to_slot(0),
-                    BareKey::Char('u') => self.jump_to_slot(1),
-                    BareKey::Char('i') => self.jump_to_slot(2),
-                    BareKey::Char('o') => self.jump_to_slot(3),
-                    BareKey::Char('p') => self.jump_to_slot(4),
-
-                    // Uppercase Y/U/I/O/P: Assign (override) slot
-                    BareKey::Char('Y') => self.assign_slot(0),
-                    BareKey::Char('U') => self.assign_slot(1),
-                    BareKey::Char('I') => self.assign_slot(2),
-                    BareKey::Char('O') => self.assign_slot(3),
-                    BareKey::Char('P') => self.assign_slot(4),
-
-                    // Delete: press 'd' then slot key
-                    BareKey::Char('d') => {
-                        self.awaiting_delete_key = true;
-                        should_render = true;
-                    }
-
-                    // Navigation
-                    BareKey::Down | BareKey::Char('j') => {
-                        self.select_down();
-                        should_render = true;
-                    }
-                    BareKey::Up | BareKey::Char('k') => {
-                        self.select_up();
-                        should_render = true;
-                    }
-
-                    // Jump to selected slot with Enter/l
-                    BareKey::Enter | BareKey::Char('l') => {
-                        self.jump_to_slot(self.selected_slot);
-                    }
-
-                    // Reload from disk
-                    BareKey::Char('r') => {
-                        self.load_from_disk();
-                        should_render = true;
-                    }
-
-                    // Close
-                    BareKey::Char('c') | BareKey::Esc => {
-                        hide_self();
-                    }
-
-                    _ => (),
+                BareKey::Char(c) if is_slot_key(c) && key.has_no_modifiers() => {
+                    self.jump_to_slot(c);
                 }
-            }
+                BareKey::Char('d') if key.has_modifiers(&[KeyModifier::Ctrl]) => {
+                    self.delete_selected_slot();
+                    should_render = true;
+                }
+                BareKey::Down | BareKey::Char('j') => {
+                    self.select_down();
+                    should_render = true;
+                }
+                BareKey::Up | BareKey::Char('k') => {
+                    self.select_up();
+                    should_render = true;
+                }
+                BareKey::Enter => {
+                    if let Some(key) = self.selected_key() {
+                        self.jump_to_slot(key);
+                    }
+                }
+                BareKey::Esc => {
+                    hide_self();
+                }
+                _ => (),
+            },
             _ => (),
         };
 
@@ -521,28 +477,29 @@ impl ZellijPlugin for State {
             pipe_message.name,
             pipe_message.payload
         );
-        let slot = pipe_message
+        let slot_key = pipe_message
             .payload
             .as_deref()
-            .and_then(|p| p.parse::<usize>().ok());
+            .and_then(|p| p.chars().next())
+            .filter(|c| is_slot_key(*c));
 
-        let Some(slot) = slot else {
+        let Some(slot_key) = slot_key else {
             return false;
         };
 
         match pipe_message.name.as_str() {
             "jump" => {
                 if self.host_folder_ready {
-                    self.jump_to_slot(slot);
+                    self.jump_to_slot(slot_key);
                 } else {
-                    self.pending_actions.push(PendingAction::Jump(slot));
+                    self.pending_actions.push(PendingAction::Jump(slot_key));
                 }
             }
             "assign" => {
                 if self.host_folder_ready {
-                    self.assign_slot(slot);
+                    self.assign_slot(slot_key);
                 } else {
-                    self.pending_actions.push(PendingAction::Assign(slot));
+                    self.pending_actions.push(PendingAction::Assign(slot_key));
                 }
             }
             _ => {}
@@ -559,7 +516,6 @@ impl ZellijPlugin for State {
         println!("{}{}", title.bold(), title_suffix);
         println!();
 
-        // Show loading or error state
         if let Some(err) = &self.error {
             println!("  {}", err.red());
             println!();
@@ -568,54 +524,48 @@ impl ZellijPlugin for State {
             println!();
         }
 
-        // Render the 5 slots
-        for i in 0..5 {
-            let slot_char = slot_index_to_char(i);
-            let is_selected = i == self.selected_slot;
-
-            let slot_display = if let Some(slot) = self.harpoon_data.get_slot(i) {
+        if self.harpoon_data.slots.is_empty() {
+            println!("  {}", "No slots assigned.".dimmed());
+            println!(
+                "  {}",
+                "Press Shift+letter to assign current pane.".dimmed()
+            );
+        } else {
+            for (i, (key, slot)) in self.harpoon_data.slots.iter().enumerate() {
                 let online = self.is_session_online(&slot.session_name);
                 let status = if online { "" } else { " (offline)" };
-                format!(
+                let slot_display = format!(
                     "[{}] {} | {} | {}{}",
-                    slot_char, slot.session_name, slot.tab_name, slot.pane_title, status
-                )
-            } else {
-                format!("[{}] (empty)", slot_char)
-            };
+                    key, slot.session_name, slot.tab_name, slot.pane_title, status
+                );
 
-            if is_selected {
-                println!("  {}", slot_display.red().bold());
-            } else {
-                println!("  {}", slot_display);
+                if i == self.selected_index {
+                    println!("  {}", slot_display.red().bold());
+                } else {
+                    println!("  {}", slot_display);
+                }
             }
         }
 
         println!();
 
-        // Help text
-        if self.awaiting_delete_key {
-            println!("  {}", "Press y/u/i/o/p to delete that slot...".yellow());
-        } else {
-            println!(
-                "  {} {}  {} {}",
-                "y/u/i/o/p:".dimmed(),
-                "jump",
-                "Y/U/I/O/P:".dimmed(),
-                "assign"
-            );
-            println!(
-                "  {} {}  {} {}  {} {}",
-                "d + key:".dimmed(),
-                "delete",
-                "r:".dimmed(),
-                "reload",
-                "Esc:".dimmed(),
-                "close"
-            );
-        }
+        println!(
+            "  {} {}  {} {}  {} {}",
+            "a-z:".dimmed(),
+            "jump",
+            "A-Z:".dimmed(),
+            "assign",
+            "Ctrl+d:".dimmed(),
+            "delete"
+        );
+        println!(
+            "  {} {}  {} {}",
+            "j/k/↑/↓:".dimmed(),
+            "navigate",
+            "Esc:".dimmed(),
+            "close"
+        );
 
-        // Show current pane info
         if let Some(pane) = &self.focused_pane {
             println!();
             println!(
