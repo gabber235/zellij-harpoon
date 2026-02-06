@@ -1,0 +1,45 @@
+version: "3"
+
+vars:
+  TARGET: wasm32-wasip1
+  PLUGIN_DIR: "{{.HOME}}/.config/zellij/plugins"
+  PLUGIN_NAME: harpoon.wasm
+
+tasks:
+  init:
+    desc: Build release and install plugin to zellij config
+    cmds:
+      - task: build:release
+
+  build:dev:
+    desc: Build debug WASM and copy to zellij plugins directory
+    cmds:
+      - cargo build --target {{.TARGET}}
+      - mkdir -p {{.PLUGIN_DIR}}
+      - cp target/{{.TARGET}}/debug/{{.PLUGIN_NAME}} {{.PLUGIN_DIR}}/{{.PLUGIN_NAME}}
+    sources:
+      - src/**/*.rs
+      - Cargo.toml
+      - Cargo.lock
+
+  build:release:
+    desc: Build release WASM and copy to zellij plugins directory
+    cmds:
+      - cargo build --release --target {{.TARGET}}
+      - mkdir -p {{.PLUGIN_DIR}}
+      - cp target/{{.TARGET}}/release/{{.PLUGIN_NAME}} {{.PLUGIN_DIR}}/{{.PLUGIN_NAME}}
+    sources:
+      - src/**/*.rs
+      - Cargo.toml
+      - Cargo.lock
+
+  dev:
+    desc: Build debug and hot-reload plugin in running zellij session
+    cmds:
+      - task: build:dev
+      - zellij action start-or-reload-plugin "file:{{.PLUGIN_DIR}}/{{.PLUGIN_NAME}}"
+
+  build:
+    desc: Alias for build:release
+    cmds:
+      - task: build:release
