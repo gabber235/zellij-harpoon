@@ -189,6 +189,47 @@ impl State {
         }
     }
 
+    fn sync_session_slots_to_focused_pane(&mut self) {
+        let Some(session_name) = self.current_session_name.as_ref() else {
+            return;
+        };
+        let Some(focused_pane) = self.focused_pane.as_ref() else {
+            return;
+        };
+
+        let mut changed = false;
+
+        for slot in self.harpoon_data.slots.values_mut() {
+            if slot.session_name != *session_name {
+                continue;
+            }
+
+            if slot.tab_name != focused_pane.tab_info.name {
+                slot.tab_name = focused_pane.tab_info.name.clone();
+                changed = true;
+            }
+
+            if slot.tab_position != focused_pane.tab_info.position {
+                slot.tab_position = focused_pane.tab_info.position;
+                changed = true;
+            }
+
+            if slot.pane_id != focused_pane.pane_info.id {
+                slot.pane_id = focused_pane.pane_info.id;
+                changed = true;
+            }
+
+            if slot.pane_title != focused_pane.pane_info.title {
+                slot.pane_title = focused_pane.pane_info.title.clone();
+                changed = true;
+            }
+        }
+
+        if changed {
+            self.save_to_disk();
+        }
+    }
+
     fn assign_slot(&mut self, key: char) {
         let Some(session_name) = self.current_session_name.clone() else {
             return;
@@ -424,12 +465,14 @@ impl ZellijPlugin for State {
             Event::TabUpdate(tab_info) => {
                 self.tab_info = Some(tab_info);
                 self.update_panes();
+                self.sync_session_slots_to_focused_pane();
                 self.sync_slots_with_state();
                 should_render = true;
             }
             Event::PaneUpdate(pane_manifest) => {
                 self.pane_manifest = Some(pane_manifest);
                 self.update_panes();
+                self.sync_session_slots_to_focused_pane();
                 self.sync_slots_with_state();
                 should_render = true;
             }
