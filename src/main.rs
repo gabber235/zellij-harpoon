@@ -239,7 +239,7 @@ impl State {
         let current_session = self.current_session_name.as_ref();
 
         if current_session == Some(&slot_data.session_name) {
-            focus_terminal_pane(slot_data.pane_id, true);
+            focus_terminal_pane(slot_data.pane_id, true, false);
         } else {
             switch_session_with_focus(
                 &slot_data.session_name,
